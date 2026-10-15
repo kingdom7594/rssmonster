@@ -125,6 +125,19 @@ const parseRetryAfter = (value, receivedAt, maxRetryAfterMs) => {
   return boundDeadline(retryAt, receivedAt, maxRetryAfterMs);
 };
 
+// Parses a relative reset header (seconds until the window reopens) into a deadline.
+// Publishers such as Reddit emit x-ratelimit-reset instead of Retry-After on 429.
+const parseRateLimitReset = (value, receivedAt, maxRetryAfterMs) => {
+  const deltaSeconds = parseNonNegativeInteger(value);
+  if (deltaSeconds === null) return null;
+  const resetMs = secondsToMilliseconds(deltaSeconds, maxRetryAfterMs);
+  return boundDeadline(
+    new Date(receivedAt.getTime() + resetMs),
+    receivedAt,
+    maxRetryAfterMs
+  );
+};
+
 // Creates the transport-independent response policy consumed by persistence.
 export const parseResponsePolicy = (headers = {}, receivedAt = new Date()) => {
   const normalizedReceivedAt = new Date(receivedAt);
@@ -148,6 +161,10 @@ export const parseResponsePolicy = (headers = {}, receivedAt = new Date()) => {
     ),
     retryAfterAt: parseRetryAfter(
       headers['retry-after'],
+      normalizedReceivedAt,
+      maxRetryAfterMs
+    ) ?? parseRateLimitReset(
+      headers['x-ratelimit-reset'],
       normalizedReceivedAt,
       maxRetryAfterMs
     )

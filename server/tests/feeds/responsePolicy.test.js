@@ -96,6 +96,28 @@ describe('neutral HTTP response policy', () => {
   });
 
   it.each([
+    ['delta-seconds', '37', '2026-08-09T12:00:37.000Z'],
+    ['zero', '0', RECEIVED_AT.toISOString()],
+    ['invalid value', 'later', null]
+  ])('parses x-ratelimit-reset %s', (_label, value, expected) => {
+    const policy = parseResponsePolicy(
+      { 'x-ratelimit-reset': value },
+      RECEIVED_AT
+    );
+
+    expect(policy.retryAfterAt?.toISOString() || null).toBe(expected);
+  });
+
+  it('prefers Retry-After over x-ratelimit-reset when both are present', () => {
+    const policy = parseResponsePolicy(
+      { 'retry-after': '5', 'x-ratelimit-reset': '37' },
+      RECEIVED_AT
+    );
+
+    expect(policy.retryAfterAt.toISOString()).toBe('2026-08-09T12:00:05.000Z');
+  });
+
+  it.each([
     ['strong ETag', '"feed-v2"', '"feed-v2"'],
     ['weak ETag', 'W/"feed-v2"', 'W/"feed-v2"'],
     ['oversized valid ETag', `"${'x'.repeat(2047)}"`, null],
