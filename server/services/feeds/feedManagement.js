@@ -13,7 +13,7 @@ import {
   findFeedByUrlAlias,
   registerFeedUrlAliases
 } from './feedUrlAliases.js';
-import { isSuccessfulFetchOutcome } from './http/contracts.js';
+import { FETCH_OUTCOMES, isSuccessfulFetchOutcome } from './http/contracts.js';
 import {
   calculateIntervalChangeNextFetchAt,
   deterministicJitterMs
@@ -117,8 +117,19 @@ const discoveryAliasCandidates = ({
 };
 
 // Distinguishes a healthy webpage response from transport and malformed-feed failures.
-const htmlPageDiscoveryError = (observedOutcomes, parseFailures) => {
+export const htmlPageDiscoveryError = (observedOutcomes, parseFailures) => {
   const primaryOutcome = observedOutcomes[0];
+  // Preserves the publisher's rate-limit signal instead of degrading it to an invalid-feed error.
+  const rateLimited = observedOutcomes.find(
+    outcome => outcome?.type === FETCH_OUTCOMES.RATE_LIMITED
+  );
+  if (rateLimited) {
+    return new FeedManagementError(
+      'FEED_RATE_LIMITED',
+      'The feed server is rate limiting requests. Please try again later.',
+      { retryAfterAt: rateLimited.error?.retryAfter ?? null }
+    );
+  }
   const primaryContentType = String(
     primaryOutcome?.response?.headers?.['content-type'] || ''
   );

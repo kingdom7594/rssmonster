@@ -119,6 +119,20 @@ const sendFeedManagementError = (res, error) => {
   if (error.code === 'CATEGORY_NOT_FOUND') {
     return res.status(400).json({ error: 'Category not found' });
   }
+  if (error.code === 'FEED_RATE_LIMITED') {
+    const retryAfterAt = error.details?.retryAfterAt;
+    const retrySeconds = retryAfterAt instanceof Date
+      ? Math.max(0, Math.ceil((retryAfterAt.getTime() - Date.now()) / 1000))
+      : null;
+    if (retrySeconds !== null && retrySeconds > 0) {
+      res.set('Retry-After', String(retrySeconds));
+    }
+    return res.status(429).json({
+      code: 'FEED_RATE_LIMITED',
+      ...(retrySeconds !== null ? { retryAfter: retrySeconds } : {}),
+      error_msg: 'The feed server is rate limiting requests. Please try again later.'
+    });
+  }
 
   return res.status(400).json({
     error_msg: 'Feed url is invalid. Are you sure the RSS feed is correct?'

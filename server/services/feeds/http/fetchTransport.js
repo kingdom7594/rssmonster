@@ -9,6 +9,7 @@ import {
 } from './contracts.js';
 import { originRequestPolicy } from './requestCoordination.js';
 import { feedAuthenticationHeaders } from './feedRequestAuthentication.js';
+import { parseResponsePolicy } from './responsePolicy.js';
 import {
   remainingDeadlineMs,
   resolveDeadlineAt
@@ -16,6 +17,18 @@ import {
 
 export const RSSMONSTER_USER_AGENT =
   'RSSMonster/2.0.0 (+https://github.com/pietheinstrengholt/rssmonster)';
+
+const RATE_LIMITED_STATUS = 429;
+const DEFAULT_RATE_LIMIT_MAX_WAIT_MS = 90000;
+const DEFAULT_RATE_LIMIT_RETRIES = 1;
+// Keeps enough execution budget for the retried request after the wait.
+const RATE_LIMIT_RETRY_MIN_BUDGET_MS = 5000;
+
+// Resolves one non-negative integer operational bound from the environment.
+const configuredRateLimitInteger = (name, fallback) => {
+  const configured = Number.parseInt(process.env[name] || '', 10);
+  return Number.isSafeInteger(configured) && configured >= 0 ? configured : fallback;
+};
 
 // Waits for a retry backoff interval.
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -190,9 +203,17 @@ export const executeHttpRequest = async (
     request.deadlineAt,
     request.connectTimeoutMs + request.bodyTimeoutMs
   );
+  const rateLimitRetries = configuredRateLimitInteger(
+    'FEED_RATE_LIMIT_RETRIES',
+    DEFAULT_RATE_LIMIT_RETRIES
+  );
+  const rateLimitMaxWaitMs = configuredRateLimitInteger(
+    'FEED_RATE_LIMIT_MAX_WAIT_MS',
+    DEFAULT_RATE_LIMIT_MAX_WAIT_MS
+  );
 
   // Performs guarded attempts and retries eligible transient failures and timeouts.
-  const attemptFetch = async attempt => {
+  const attemptFetch = async (attempt, rateLimitAttempt = 0) => {
     const remainingMs = remainingDeadlineMs(deadline);
     if (remainingMs <= 0) {
       return {
@@ -252,6 +273,37 @@ export const executeHttpRequest = async (
         }
       );
       const release = finalRelease || (() => {});
+
+      // Honors the publisher's rate-limit window and retries once it reopens.
+      if (
+        response.status === RATE_LIMITED_STATUS &&
+        rateLimitAttempt < rateLimitRetries &&
+        !request.signal?.aborted
+      ) {
+        const policy = parseResponsePolicy(toNeutralHeaders(response.headers));
+        const retryAtMs = policy.retryAfterAt
+          ? policy.retryAfterAt.getTime()
+          : 0;
+        const waitMs = Math.min(
+          Math.max(0, retryAtMs - Date.now()),
+          rateLimitMaxWaitMs
+        );
+        if (
+          waitMs > 0 &&
+          waitMs + RATE_LIMIT_RETRY_MIN_BUDGET_MS <= remainingDeadlineMs(deadline)
+        ) {
+          try {
+            await response.body?.cancel();
+          } catch {
+            // The rate-limited response body is discarded regardless.
+          }
+          release();
+          await delay(waitMs);
+          if (!request.signal?.aborted && remainingDeadlineMs(deadline) > 0) {
+            return attemptFetch(attempt + 1, rateLimitAttempt + 1);
+          }
+        }
+      }
 
       return {
         response: createHttpResponse({
